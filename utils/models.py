@@ -15,7 +15,6 @@ class TickerResponse(BaseModel):
     confidence_source: Optional[str] = None
     estimated_credit: Optional[float] = None
     ai_analysis: Optional[Dict[str, Any]] = None
-    tooltips: Dict[str, Any]
 
 class HistoryAnalysisResponse(BaseModel):
     analysis_date: str

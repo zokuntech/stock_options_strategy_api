@@ -9,4 +9,5 @@ scipy==1.11.4
 pandas-datareader>=0.10.0
 requests>=2.31.0
 urllib3>=2.0.0
+openai>=1.0.0
 

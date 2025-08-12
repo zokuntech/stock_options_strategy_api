@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
 from typing import Optional, Dict, Any
+import openai
+import os
+import pandas as pd
 
 from utils.models import TickerRequest, TickerResponse, HistoryAnalysisResponse, WinnerAnalysisResponse
 from utils.options import estimate_bull_put_credit
@@ -72,10 +75,6 @@ def analyze_ticker(ticker: str) -> Dict[str, Any]:
             "distance_from_low": round(distance_from_low, 1),
             "price_vs_200ma": f"{price_vs_200ma:.1f}%" if price_vs_200ma is not None else None,
             "current_price": round(current_price, 2),
-            "regular_close": None,
-            "price_source": "Regular Hours",
-            "after_hours_change": None,
-            "after_hours_change_pct": None,
             "ma200": round(ma200, 2) if ma200 is not None else None,
         }
 
@@ -246,6 +245,89 @@ def get_field_tooltips() -> Dict[str, Any]:
         "reason": {"description": "Explanation for PLAY/PASS", "emoji": "📝"},
     }
 
+def generate_ai_analysis(metrics: Dict[str, Any], is_play: bool, tier: str, confidence_score: float) -> Optional[Dict[str, Any]]:
+    """
+    Generate real AI-powered analysis using OpenAI/Claude API
+    """
+    try:
+        # Get API key from environment
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return {
+                "error": "AI analysis requires OPENAI_API_KEY environment variable",
+                "fallback": "Configure API key to enable AI insights"
+            }
+        
+        # Prepare data for AI analysis
+        rsi = metrics.get("RSI")
+        vix = metrics.get("VIX")
+        percent_drop = metrics.get("percent_drop", 0)
+        distance_from_low = metrics.get("distance_from_low", 100)
+        days_oversold = metrics.get("days_oversold", 0)
+        rolling_5d_drop = metrics.get("rolling_5d_drop", 0)
+        rolling_10d_drop = metrics.get("rolling_10d_drop", 0)
+        max_recent_drop = metrics.get("max_recent_drop", 0)
+        current_price = metrics.get("current_price", 0)
+        ma200 = metrics.get("ma200")
+        
+        # Construct prompt for AI
+        prompt = f"""Analyze this bull put credit spread trading opportunity:
+
+STOCK DATA:
+- Current Price: ${current_price}
+- RSI (14-day): {rsi}
+- VIX Level: {vix}
+- Today's Change: {percent_drop}%
+- 5-day Drop: {rolling_5d_drop}%
+- 10-day Drop: {rolling_10d_drop}%
+- Max Recent Drop: {max_recent_drop}%
+- Days Oversold (RSI<30): {days_oversold}
+- Distance from Recent Low: +{distance_from_low}%
+- 200-day MA: ${ma200 if ma200 else 'N/A'}
+
+ALGORITHM ASSESSMENT:
+- Trade Signal: {'PLAY' if is_play else 'PASS'}
+- Tier: {tier}
+- Confidence Score: {confidence_score}/1.0
+
+As an expert options trader, provide a concise analysis including:
+1. Your assessment of this bull put credit spread opportunity
+2. Key risk factors to consider
+3. Market timing assessment
+4. Specific entry/exit recommendations
+5. Position sizing suggestions
+
+Keep response under 200 words and focus on actionable insights."""
+
+        # Make API call to OpenAI
+        client = openai.OpenAI(api_key=api_key)
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # Use the faster, cheaper model
+            messages=[
+                {"role": "system", "content": "You are an expert options trader specializing in bull put credit spreads. Provide concise, actionable trading advice."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=300,
+            temperature=0.3
+        )
+        
+        ai_analysis = response.choices[0].message.content.strip()
+        
+        return {
+            "analysis": ai_analysis,
+            "model": "gpt-4o-mini",
+            "confidence": confidence_score,
+            "timestamp": pd.Timestamp.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.warning(f"AI analysis failed: {e}")
+        return {
+            "error": f"AI analysis unavailable: {str(e)}",
+            "fallback": "Use algorithmic signals for trading decisions"
+        }
+
 @app.post("/check-dip", response_model=TickerResponse)
 async def check_dip(request: TickerRequest):
     ticker = request.ticker.upper()
@@ -268,8 +350,6 @@ async def check_dip(request: TickerRequest):
             is_play=is_play,
         )
 
-        tooltips = get_field_tooltips()
-
         response_metrics = {}
         for key, value in metrics.items():
             if value is not None:
@@ -283,18 +363,25 @@ async def check_dip(request: TickerRequest):
             else:
                 response_metrics[key] = value
 
-        return TickerResponse(
-            ticker=ticker,
-            play=is_play,
-            tier=tier,
-            metrics=response_metrics,
-            reason=reason,
-            confidence_score=round(confidence_score, 2),
-            confidence_source="algorithmic",
-            estimated_credit=estimated_credit,
-            ai_analysis=None,
-            tooltips=tooltips,
-        )
+        response_data = {
+            "ticker": ticker,
+            "play": is_play,
+            "tier": tier,
+            "metrics": response_metrics,
+            "reason": reason,
+            "confidence_score": round(confidence_score, 2),
+            "confidence_source": "algorithmic",
+            "estimated_credit": estimated_credit,
+        }
+        
+        # Only include ai_analysis if requested
+        if request.include_ai_analysis:
+            ai_analysis_result = generate_ai_analysis(metrics, is_play, tier, confidence_score)
+            response_data["ai_analysis"] = ai_analysis_result
+            
+        # Return the response as a dict to avoid Pydantic including None fields
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=response_data)
 
     except Exception as e:
         msg = str(e)
