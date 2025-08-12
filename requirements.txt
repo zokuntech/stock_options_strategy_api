@@ -5,3 +5,8 @@ yfinance==0.2.52
 pandas==2.2.2
 numpy==1.26.4
 python-dotenv==1.0.1
+scipy==1.11.4
+pandas-datareader>=0.10.0
+requests>=2.31.0
+urllib3>=2.0.0
+
