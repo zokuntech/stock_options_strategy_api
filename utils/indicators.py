@@ -38,6 +38,9 @@ def _alpha_vantage_history(ticker: str, days: int = 90) -> Optional[pd.DataFrame
         response.raise_for_status()
         data = response.json()
         
+        # Debug logging - remove after fixing
+        logger.info(f"Alpha Vantage response for {ticker}: {str(data)[:500]}...")
+        
         if "Error Message" in data:
             logger.warning(f"Alpha Vantage error for {ticker}: {data['Error Message']}")
             return None

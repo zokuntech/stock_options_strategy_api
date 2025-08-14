@@ -45,3 +45,4 @@ logs/
 dist/
 build/
 *.egg-info/venv/
+terraform/current-task-def.json

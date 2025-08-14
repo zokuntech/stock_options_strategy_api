@@ -1,12 +1,12 @@
-name: Build and Deploy (ECR → App Runner)
+name: Build and Deploy to ECS Fargate
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "final-deploy" ]
   workflow_dispatch:
 
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -16,10 +16,14 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-      IMAGE_TAG: latest
+      ECS_CLUSTER: stock-options-strategy-api-prod
+      ECS_SERVICE: stock-options-strategy-api-prod
+      TASK_DEFINITION_FAMILY: stock-options-strategy-api-prod
+      IMAGE_TAG: ${{ github.sha }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -30,12 +34,54 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push image
+      - name: Build and push Docker image
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      # If App Runner auto-deploy is disabled, uncomment to trigger manually
-      # - name: Trigger App Runner deployment
-      #   run: |
-      #     aws apprunner start-deployment --service-arn ${{ secrets.APP_RUNNER_SERVICE_ARN }} 
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $TASK_DEFINITION_FAMILY \
+            --query taskDefinition > task-definition.json
+
+      - name: Update task definition with new image
+        run: |
+          # Create a new task definition with the new image
+          cat task-definition.json | jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" '
+            .containerDefinitions[0].image = $IMAGE |
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy)
+          ' > new-task-definition.json
+
+      - name: Register new task definition
+        run: |
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "NEW_TASK_DEF_ARN=$NEW_TASK_DEF_ARN" >> $GITHUB_ENV
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition $NEW_TASK_DEF_ARN
+
+      - name: Wait for deployment to complete
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --cli-read-timeout 600 \
+            --cli-connect-timeout 600
+
+      - name: Get deployment status
+        run: |
+          aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --query 'services[0].deployments[?status==`PRIMARY`].{Status:rolloutState,TaskDef:taskDefinition,Running:runningCount,Desired:desiredCount}' \
+            --output table 
