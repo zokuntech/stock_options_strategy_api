@@ -677,6 +677,9 @@ async def screen_single_stock(
         if min_volume and current_volume and current_volume < min_volume:
             return None
         
+        # Get company overview data for market cap
+        market_cap = _get_market_cap(ticker)
+        
         # Create result
         return {
             "ticker": ticker,
@@ -684,6 +687,8 @@ async def screen_single_stock(
             "daily_change_pct": round(daily_change_pct, 2),
             "rsi": round(current_rsi, 1),
             "volume": int(current_volume) if current_volume else None,
+            "market_cap": market_cap,
+            "market_cap_billions": round(market_cap / 1_000_000_000, 2) if market_cap else None,
             "period_analyzed": period,
             "previous_price": round(previous_price, 2)
         }
@@ -801,3 +806,47 @@ async def quick_screen_stocks(
         "scan_timestamp": datetime.utcnow().isoformat(),
         "data_source": "Alpha Vantage Premium (Quick Screen)"
     } 
+
+def _get_market_cap(ticker: str) -> Optional[float]:
+    """
+    Get market cap for a ticker using Alpha Vantage Company Overview
+    """
+    try:
+        import requests
+        import time
+        
+        # Check cache first
+        cache_key = f"market_cap_{ticker}"
+        cached_data = _get_cached_data(cache_key, 24)  # Cache for 24 hours
+        if cached_data:
+            return cached_data
+        
+        # Call Alpha Vantage Company Overview API
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "OVERVIEW",
+            "symbol": ticker,
+            "apikey": ALPHA_VANTAGE_API_KEY
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        
+        # Rate limiting
+        time.sleep(DELAY_BETWEEN_CALLS)
+        
+        # Parse market cap
+        market_cap = data.get("MarketCapitalization")
+        if market_cap and market_cap != "None":
+            market_cap_float = float(market_cap)
+            
+            # Cache the result
+            _set_cached_data(cache_key, market_cap_float)
+            
+            return market_cap_float
+        
+        return None
+        
+    except Exception as e:
+        logger.warning(f"Failed to get market cap for {ticker}: {e}")
+        return None 
