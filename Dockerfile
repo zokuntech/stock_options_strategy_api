@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+aws ecs describe-services --cluster stock-options-strategy-api-prod --services stock-options-strategy-api-prod --query "services[0].taskDefinition" --output textFROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
