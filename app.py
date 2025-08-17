@@ -1,22 +1,31 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 import logging
 from typing import Optional, Dict, Any
 import time
 import hashlib
+import secrets
+import string
+from datetime import datetime, timedelta
 
-from utils.models import TickerRequest, TickerResponse, HistoryAnalysisResponse, WinnerAnalysisResponse
+from utils.models import TickerRequest, TickerResponse, HistoryAnalysisResponse, WinnerAnalysisResponse, ScreenerRequest, ScreenerResponse
 from utils.options import estimate_bull_put_credit
 from utils.indicators import (
     get_daily_history,
     calculate_rsi,
     get_market_context,
 )
+from utils.screener import screen_stocks
 
 import openai
 import os
 import pandas as pd
+import asyncio
+import json
+import time
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -379,58 +388,229 @@ async def check_dip(request: TickerRequest):
         vix_level = metrics.get("VIX", 20)
         estimated_credit = estimate_bull_put_credit(current_price, vix_level)
 
-        tier = classify_tier(
-            confidence_score=confidence_score,
-            estimated_credit=estimated_credit,
-            current_rsi=metrics.get("RSI"),
-            vix_level=metrics.get("VIX"),
-            distance_from_low=metrics.get("distance_from_low", 100),
-            is_play=is_play,
-        )
-
-        response_metrics = {}
-        for key, value in metrics.items():
-            if value is not None:
-                if isinstance(value, (int, float)):
-                    if key in ["current_price", "ma200"]:
-                        response_metrics[key] = round(value, 2)
-                    else:
-                        response_metrics[key] = round(float(value), 1)
-                else:
-                    response_metrics[key] = value
-            else:
-                response_metrics[key] = value
-
         response_data = {
             "ticker": ticker,
             "play": is_play,
-            "tier": tier,
-            "metrics": response_metrics,
+            "tier": "BUY" if is_play else "PASS",
+            "metrics": metrics,
             "reason": reason,
-            "confidence_score": round(confidence_score, 2),
+            "confidence_score": confidence_score,
             "confidence_source": "algorithmic",
             "estimated_credit": estimated_credit,
         }
-        
-        # Only include ai_analysis if requested
+
         if request.include_ai_analysis:
-            ai_analysis_result = generate_ai_analysis(metrics, is_play, tier, confidence_score)
-            response_data["ai_analysis"] = ai_analysis_result
-            
-        # Return the response as a dict to avoid Pydantic including None fields
-        from fastapi.responses import JSONResponse
+            ai_analysis = generate_ai_analysis(metrics, is_play, "BUY" if is_play else "PASS", confidence_score)
+            if ai_analysis:
+                response_data["ai_analysis"] = ai_analysis
+
         return JSONResponse(content=response_data)
 
     except Exception as e:
-        msg = str(e)
-        if any(s in msg for s in ["Too Many Requests", "Rate limited", "429"]):
-            # Should be rare now, and will fall back to Stooq for price data
-            raise HTTPException(status_code=429, detail=f"Rate limited: {msg}")
-        raise HTTPException(status_code=500, detail=f"Error processing {ticker}: {msg}")
+        logger.error(f"Error processing {ticker}: {e}")
+        raise HTTPException(status_code=400, detail=f"Error processing {ticker}: {e}")
+
+@app.post("/screen", response_model=ScreenerResponse)
+async def screen_stocks_endpoint(request: ScreenerRequest):
+    """
+    Screen stocks for bull put credit spread opportunities
+    
+    Finds stocks that are:
+    - Down X%+ in specified time period (default 5% in 1 week)
+    - RSI below threshold (default 40 - oversold)
+    - Large market cap (10B+ companies)
+    
+    Time periods supported:
+    - 'today' or '1d': Today only
+    - '3d': Last 3 days  
+    - '1w': Last week (default)
+    - '2w': Last 2 weeks
+    - '1m': Last month
+    - '3m': Last 3 months
+    - 'ytd': Year to date
+    """
+    try:
+        logger.info(f"Starting stock screen with filters: {request.dict()}")
+        
+        results = screen_stocks(
+            min_market_cap=request.min_market_cap,
+            max_rsi=request.max_rsi,
+            min_daily_drop=request.min_daily_drop,
+            max_results=request.max_results,
+            include_analysis=request.include_analysis,
+            period=request.period,
+            min_volume=request.min_volume,
+            sectors=request.sectors
+        )
+        
+        # Convert to response format
+        screener_results = []
+        for result in results["results"]:
+            screener_results.append({
+                "ticker": result["ticker"],
+                "company_name": result.get("company_name"),
+                "market_cap": result.get("market_cap"),
+                "current_price": result["current_price"],
+                "daily_change_pct": result["daily_change_pct"],
+                "rsi": result["rsi"],
+                "volume": result.get("volume"),
+                "sector": result.get("sector"),
+                "period_analyzed": result["period_analyzed"],
+                "drop_period": result["drop_period"],
+                "quick_analysis": result.get("quick_analysis")
+            })
+        
+        response_data = {
+            "total_found": results["total_found"],
+            "filters_applied": results["filters_applied"],
+            "results": screener_results,
+            "scan_timestamp": results["scan_timestamp"],
+            "data_source": results["data_source"]
+        }
+        
+        logger.info(f"Screen complete: {results['total_found']} stocks found from {results['total_checked']} checked")
+        return JSONResponse(content=response_data)
+        
+    except Exception as e:
+        logger.error(f"Error in stock screening: {e}")
+        raise HTTPException(status_code=500, detail=f"Error screening stocks: {e}")
+
+@app.post("/screen/stream")
+async def screen_stocks_stream(request: ScreenerRequest):
+    """
+    Stream screening results as they're found (for UI real-time updates)
+    Returns results in chunks as JSON lines
+    """
+    async def generate_results():
+        try:
+            # Import here to avoid circular imports
+            from utils.screener import stream_screen_stocks
+            
+            # Start the streaming screener
+            async for chunk in stream_screen_stocks(
+                min_market_cap=request.min_market_cap,
+                max_rsi=request.max_rsi,
+                min_daily_drop=request.min_daily_drop,
+                max_results=request.max_results,
+                include_analysis=request.include_analysis,
+                period=request.period,
+                min_volume=request.min_volume,
+                sectors=request.sectors,
+                force_refresh=request.force_refresh
+            ):
+                # Yield each chunk as JSON line
+                yield f"data: {json.dumps(chunk)}\n\n"
+                
+        except Exception as e:
+            error_chunk = {
+                "type": "error",
+                "message": f"Screening error: {str(e)}",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+    
+    return StreamingResponse(
+        generate_results(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
+
+@app.post("/screen/json-stream")
+async def screen_stocks_json_stream(request: ScreenerRequest):
+    """
+    Stream screening results as pure JSON array (not SSE format)
+    Returns results as they're found in JSON format
+    """
+    try:
+        # Import here to avoid circular imports
+        from utils.screener import stream_screen_stocks
+        
+        results = []
+        total_checked = 0
+        start_time = time.time()
+        
+        # Collect streaming results
+        async for chunk in stream_screen_stocks(
+            min_market_cap=request.min_market_cap,
+            max_rsi=request.max_rsi,
+            min_daily_drop=request.min_daily_drop,
+            max_results=request.max_results,
+            include_analysis=request.include_analysis,
+            period=request.period,
+            min_volume=request.min_volume,
+            sectors=request.sectors,
+            force_refresh=request.force_refresh,
+            batch_size=20  # Larger batches for JSON response
+        ):
+            if chunk["type"] == "result":
+                results.append(chunk["stock"])
+            elif chunk["type"] == "complete":
+                total_checked = chunk["summary"]["total_checked"]
+                break
+        
+        # Return standard JSON response format
+        total_time = time.time() - start_time
+        response_data = {
+            "total_found": len(results),
+            "total_checked": total_checked,
+            "performance": {
+                "total_time_seconds": round(total_time, 1),
+                "screening_type": "json_stream"
+            },
+            "filters_applied": {
+                "min_market_cap": request.min_market_cap,
+                "max_rsi": request.max_rsi,
+                "min_daily_drop": request.min_daily_drop,
+                "max_results": request.max_results,
+                "period": request.period,
+                "min_volume": request.min_volume,
+                "sectors": request.sectors
+            },
+            "results": results,
+            "scan_timestamp": datetime.utcnow().isoformat(),
+            "data_source": "Alpha Vantage Premium (JSON Stream)"
+        }
+        
+        logger.info(f"JSON stream complete: {len(results)} stocks found from {total_checked} checked")
+        return JSONResponse(content=response_data)
+        
+    except Exception as e:
+        logger.error(f"JSON streaming error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error in JSON streaming: {str(e)}")
+
+@app.post("/screen/quick")
+async def screen_stocks_quick(request: ScreenerRequest):
+    """
+    Quick screening with relaxed filters to find more matches
+    """
+    try:
+        # Import here to avoid circular imports
+        from utils.screener import quick_screen_stocks
+        
+        results = await quick_screen_stocks(
+            min_market_cap=request.min_market_cap,
+            max_rsi=request.max_rsi,
+            min_daily_drop=request.min_daily_drop,
+            max_results=min(request.max_results, 50),  # Limit for speed
+            period=request.period,
+            min_volume=request.min_volume,
+            sectors=request.sectors
+        )
+        
+        logger.info(f"Quick screen complete: {results['total_found']} stocks found from {results['total_checked']} checked")
+        return JSONResponse(content=results)
+        
+    except Exception as e:
+        logger.error(f"Quick screening error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error in quick screening: {str(e)}")
 
 @app.get("/")
 def root():
-    return {"message": "Bull Put Credit Spread API (Yahoo with Stooq fallback)", "version": "2.2.0"}
+    return {"message": "Bull Put Credit Spread API (Alpha Vantage)", "version": "2.2.0"}
 
 if __name__ == "__main__":
     # Use a single worker in Docker/App Runner
