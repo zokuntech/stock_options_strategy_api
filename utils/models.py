@@ -52,3 +52,34 @@ class WinnerAnalysisResponse(BaseModel):
     key_insights: List[str]
     recommendations: List[str]
     data_quality: str
+
+class ScreenerRequest(BaseModel):
+    min_market_cap: float = 10_000_000_000  # $10B default
+    max_rsi: float = 40.0  # RSI below 40
+    min_daily_drop: float = 5.0  # Down 5% or more
+    max_results: int = 50  # Limit results
+    include_analysis: bool = False  # Whether to run full analysis on each
+    period: str = "1w"  # Time period: 'today', '1d', '3d', '1w', '2w', '1m', '3m', 'ytd'
+    min_volume: Optional[int] = None  # Minimum daily volume
+    sectors: Optional[List[str]] = None  # Sector filter (future use)
+    force_refresh: bool = False  # Force refresh of cached data
+
+class ScreenerResult(BaseModel):
+    ticker: str
+    company_name: Optional[str] = None
+    market_cap: Optional[float] = None
+    current_price: float
+    daily_change_pct: float
+    rsi: float
+    volume: Optional[int] = None
+    sector: Optional[str] = None
+    period_analyzed: str
+    drop_period: str
+    quick_analysis: Optional[Dict[str, Any]] = None
+
+class ScreenerResponse(BaseModel):
+    total_found: int
+    filters_applied: Dict[str, Any]
+    results: List[ScreenerResult]
+    scan_timestamp: str
+    data_source: str = "Alpha Vantage"

@@ -72,4 +72,44 @@ resource "aws_iam_policy" "gha_ecr" {
 resource "aws_iam_role_policy_attachment" "gha_ecr_attach" {
   role       = aws_iam_role.gha_ecr_push.name
   policy_arn = aws_iam_policy.gha_ecr.arn
+}
+
+# ECS deployment permissions for GitHub Actions
+data "aws_iam_policy_document" "gha_ecs_policy" {
+  statement {
+    actions = [
+      "ecs:DescribeTaskDefinition",
+      "ecs:RegisterTaskDefinition",
+      "ecs:UpdateService",
+      "ecs:DescribeServices",
+      "ecs:ListTasks",
+      "ecs:DescribeTasks"
+    ]
+    resources = ["*"]
+  }
+  
+  statement {
+    actions = [
+      "iam:PassRole"
+    ]
+    resources = [
+      "arn:aws:iam::*:role/${var.project_name}-${var.environment}-ecs-execution",
+      "arn:aws:iam::*:role/${var.project_name}-${var.environment}-ecs-task"
+    ]
+  }
+}
+
+resource "aws_iam_policy" "gha_ecs" {
+  name   = "${var.project_name}-${var.environment}-gha-ecs"
+  policy = data.aws_iam_policy_document.gha_ecs_policy.json
+
+  tags = {
+    Project     = var.project_name
+    Environment = var.environment
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "gha_ecs_attach" {
+  role       = aws_iam_role.gha_ecr_push.name
+  policy_arn = aws_iam_policy.gha_ecs.arn
 } 
