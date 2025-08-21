@@ -67,15 +67,17 @@ class ScreenerRequest(BaseModel):
 class ScreenerResult(BaseModel):
     ticker: str
     company_name: Optional[str] = None
-    market_cap: Optional[float] = None
+    market_cap: Optional[float] = None  # Market cap in dollars
+    market_cap_billions: Optional[float] = None  # Market cap in billions for display
     current_price: float
     daily_change_pct: float
-    rsi: float
+    rsi: Optional[float] = None
     volume: Optional[int] = None
     sector: Optional[str] = None
     period_analyzed: str
-    drop_period: str
-    quick_analysis: Optional[Dict[str, Any]] = None
+    drop_period: Optional[str] = None  # Deprecated, use period_analyzed
+    quick_analysis: Optional[str] = None
+    previous_price: Optional[float] = None
 
 class ScreenerResponse(BaseModel):
     total_found: int
