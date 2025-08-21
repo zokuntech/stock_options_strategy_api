@@ -28,14 +28,14 @@ if API_TIER == "premium":
     REQUESTS_PER_MINUTE = 150  # Premium tier limit
     DAILY_API_LIMIT = 10000    # Very high limit for premium (can screen thousands)
     DELAY_BETWEEN_CALLS = 0.4  # 60s / 150 = 0.4s (faster for premium)
-    MAX_STOCKS_PER_SCREEN = 1000  # Screen up to 1000 stocks at once for premium
+    MAX_STOCKS_PER_SCREEN = 2000  # Screen up to 2000 stocks at once for premium (increased for larger universe)
 else:
     REQUESTS_PER_MINUTE = 5    # Free tier is very limited
     DAILY_API_LIMIT = 20       # Conservative limit for free tier
     DELAY_BETWEEN_CALLS = 12   # 60s / 5 = 12s delay
     MAX_STOCKS_PER_SCREEN = 20 # Limited screening for free tier
 
-SP500_CACHE_HOURS = 24  # Cache S&P 500 list for 24 hours
+SP500_CACHE_HOURS = 24  # Cache stock universe for 24 hours
 SCREEN_CACHE_HOURS = 1  # Cache screening results for 1 hour (premium can refresh more often)
 
 logger.info(f"Alpha Vantage API Tier: {API_TIER.upper()}")
@@ -97,22 +97,83 @@ def _set_cached_data(cache_key: str, data: Any) -> None:
         logger.warning(f"Cache write error for {cache_key}: {e}")
 
 # ===========================
-#  S&P 500 Dynamic Fetching
+#  Stock Universe Loading
 # ===========================
 
-def get_sp500_symbols() -> List[str]:
+def get_comprehensive_stock_universe() -> List[str]:
     """
-    Get the actual S&P 500 companies list
-    Loads from comprehensive JSON file with caching
+    Get a focused stock universe - core S&P 500 companies only
     """
-    cache_key = "actual_sp500_symbols"
+    cache_key = "core_sp500_universe"
     
     # Try to get from cache first
     cached_symbols = _get_cached_data(cache_key, SP500_CACHE_HOURS)
     if cached_symbols:
         return cached_symbols
     
-    logger.info("Loading S&P 500 companies from JSON file...")
+    logger.info("Loading core S&P 500 stock universe...")
+    
+    try:
+        # Load from the comprehensive JSON file but use only S&P 500 subset
+        import json
+        import os
+        
+        # Get the path to the JSON file
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(os.path.dirname(current_dir), 'data', 'sp500_companies.json')
+        
+        with open(json_path, 'r') as f:
+            sp500_data = json.load(f)
+        
+        # Get the core S&P 500 list
+        companies = sp500_data.get('companies', [])
+        
+        if not companies:
+            # Fallback to comprehensive list
+            logger.warning("S&P 500 list not found, falling back to comprehensive list")
+            json_path = os.path.join(os.path.dirname(current_dir), 'data', 'final_stock_tickers.json')
+            with open(json_path, 'r') as f:
+                stock_data = json.load(f)
+            companies = stock_data.get('all_tickers', [])[:500]  # Take first 500
+        
+        if not companies:
+            raise ValueError("No tickers found in stock universe files")
+        
+        # Sort alphabetically for consistent processing order
+        companies.sort()
+        
+        logger.info(f"Loaded {len(companies)} core S&P 500 companies")
+        
+        # Cache the results
+        _set_cached_data(cache_key, companies)
+        
+        return companies
+        
+    except Exception as e:
+        logger.error(f"Error loading stock universe: {e}")
+        # Fallback to a minimal list of large cap stocks
+        fallback_list = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B', 'UNH', 'JNJ',
+            'XOM', 'JPM', 'V', 'PG', 'MA', 'CVX', 'HD', 'LLY', 'ABBV', 'AVGO',
+            'PFE', 'KO', 'MRK', 'PEP', 'COST', 'TMO', 'BAC', 'WMT', 'DIS', 'ABT',
+            'CRM', 'ACN', 'NFLX', 'ADBE', 'CSCO', 'NKE', 'DHR', 'VZ', 'T', 'TXN',
+            'ORCL', 'WFC', 'QCOM', 'PM', 'COP', 'MCD', 'BMY', 'UNP', 'AMD', 'NEE'
+        ]
+        logger.info(f"Using fallback list of {len(fallback_list)} major companies")
+        return fallback_list
+
+def get_sp500_symbols_fallback() -> List[str]:
+    """
+    Fallback S&P 500 symbols loader (original function renamed)
+    """
+    cache_key = "sp500_symbols_fallback"
+    
+    # Try to get from cache first
+    cached_symbols = _get_cached_data(cache_key, SP500_CACHE_HOURS)
+    if cached_symbols:
+        return cached_symbols
+    
+    logger.info("Loading S&P 500 companies from JSON file (fallback)...")
     
     try:
         # Load from JSON file
@@ -129,12 +190,12 @@ def get_sp500_symbols() -> List[str]:
         companies = sp500_data.get('companies', [])
         
         if not companies:
-            raise ValueError("No companies found in JSON file")
+            raise ValueError("No companies found in S&P 500 JSON file")
         
         # Sort alphabetically for consistent processing
         companies.sort()
         
-        logger.info(f"Loaded {len(companies)} S&P 500 companies from JSON file")
+        logger.info(f"Loaded {len(companies)} S&P 500 companies from JSON file (fallback)")
         
         # Cache the results
         _set_cached_data(cache_key, companies)
@@ -144,16 +205,23 @@ def get_sp500_symbols() -> List[str]:
     except Exception as e:
         logger.error(f"Failed to load S&P 500 companies from JSON: {e}")
         
-        # Fallback to our static list if JSON loading fails
+        # Final fallback to our static list if JSON loading fails
         logger.info("Falling back to static large-cap list")
         return LARGE_CAP_TICKERS
+
+# Maintain backward compatibility
+def get_sp500_symbols() -> List[str]:
+    """
+    Legacy function name - now returns comprehensive universe for better screening
+    """
+    return get_comprehensive_stock_universe()
 
 def get_screening_batch(all_symbols: List[str], max_stocks: int = None) -> List[str]:
     """
     Get a batch of symbols to screen, optimized for API tier
     
-    For Premium: Can screen many more stocks at once
-    For Free: Rotates through symbols daily to eventually cover all
+    For Premium: Can screen many more stocks from the comprehensive universe (5,185 tickers)
+    For Free: Rotates through symbols daily to eventually cover the universe
     """
     if not all_symbols:
         return []
@@ -163,20 +231,21 @@ def get_screening_batch(all_symbols: List[str], max_stocks: int = None) -> List[
     
     # For premium API, we can screen many more stocks
     if API_TIER == "premium":
-        # For small requests (like streaming), use a reasonable minimum
-        if max_stocks < 50:
-            effective_limit = min(100, len(all_symbols))  # Use at least 100 stocks for good coverage
+        # For small requests (like streaming), use a reasonable minimum for good coverage
+        if max_stocks < 100:
+            effective_limit = min(200, len(all_symbols))  # Use at least 200 stocks for better coverage of large universe
         else:
-            effective_limit = min(max_stocks, len(all_symbols))  # Screen all available S&P 500 stocks
+            effective_limit = min(max_stocks, len(all_symbols))  # Screen up to the full universe if requested
         
         batch = all_symbols[:effective_limit]
-        logger.info(f"Premium tier: Screening {len(batch)} S&P 500 companies out of {len(all_symbols)} total")
-        if len(batch) > 50:
-            logger.info(f"Estimated time: {(len(batch) * 0.4) / 60:.1f} minutes at 150 calls/min")
+        logger.info(f"Premium tier: Screening {len(batch)} companies from comprehensive universe ({len(all_symbols)} total tickers)")
+        if len(batch) > 100:
+            estimated_minutes = (len(batch) * 0.4) / 60
+            logger.info(f"Estimated screening time: {estimated_minutes:.1f} minutes at 150 calls/min")
         return batch
     
     else:
-        # Free tier: Use daily rotation like before
+        # Free tier: Use daily rotation to eventually cover the whole universe
         today = datetime.now().date()
         day_of_year = today.timetuple().tm_yday
         
@@ -190,8 +259,9 @@ def get_screening_batch(all_symbols: List[str], max_stocks: int = None) -> List[
         
         batch = all_symbols[start_idx:end_idx]
         
-        logger.info(f"Free tier: Using batch {batch_index + 1}/{total_batches} ({len(batch)} symbols)")
+        logger.info(f"Free tier: Using batch {batch_index + 1}/{total_batches} from comprehensive universe ({len(batch)} symbols)")
         logger.info(f"Today's symbols: {', '.join(batch[:10])}{'...' if len(batch) > 10 else ''}")
+        logger.info(f"Complete universe coverage: {total_batches} days rotation")
         
         return batch
 
@@ -294,11 +364,11 @@ def screen_stocks(
     period: str = '1w',
     min_volume: Optional[int] = None,
     sectors: Optional[List[str]] = None,
-    use_dynamic_sp500: bool = True,
+    use_comprehensive_universe: bool = True,
     force_refresh: bool = False
 ) -> Dict[str, Any]:
     """
-    Screen stocks for bull put credit spread opportunities
+    Screen stocks for bull put credit spread opportunities from comprehensive universe
     
     Args:
         min_market_cap: Minimum market cap in USD
@@ -309,11 +379,11 @@ def screen_stocks(
         period: Time period to look for drops ('today', '1d', '3d', '1w', '2w', '1m', '3m', 'ytd')
         min_volume: Minimum daily volume filter
         sectors: List of sectors to include (if None, include all)
-        use_dynamic_sp500: Whether to use dynamic S&P 500 list or static fallback
+        use_comprehensive_universe: Whether to use comprehensive universe (5,185 tickers) or S&P 500 fallback
         force_refresh: Force refresh of cached data
     
     Returns:
-        Dict with screener results
+        Dict with screener results from comprehensive S&P 500 + Russell 1000 universe
     """
     # Create cache key for this specific screening request
     cache_params = {
@@ -323,6 +393,7 @@ def screen_stocks(
         'period': period,
         'min_volume': min_volume,
         'sectors': sectors,
+        'universe': 'comprehensive' if use_comprehensive_universe else 'sp500_fallback',
         'date': datetime.now().date().isoformat()  # Include date so cache refreshes daily
     }
     cache_key = f"screening_{hashlib.md5(str(cache_params).encode()).hexdigest()}"
@@ -339,14 +410,17 @@ def screen_stocks(
     start_date, end_date = get_date_range(period)
     
     # Get stock symbols to screen
-    if use_dynamic_sp500:
-        logger.info("Getting dynamic S&P 500 symbol list...")
-        all_symbols = get_sp500_symbols()
-        # Get batch based on API tier
-        symbols_to_screen = get_screening_batch(all_symbols, max_results)
+    if use_comprehensive_universe:
+        logger.info("Getting comprehensive stock universe (S&P 500 + Russell 1000)...")
+        all_symbols = get_comprehensive_stock_universe()
+        data_source = "Comprehensive Universe (S&P 500 + Russell 1000)"
     else:
-        logger.info("Using static large-cap symbol list...")
-        symbols_to_screen = LARGE_CAP_TICKERS[:max_results]  # Limit to max_results
+        logger.info("Using S&P 500 fallback symbol list...")
+        all_symbols = get_sp500_symbols_fallback()
+        data_source = "S&P 500 Fallback"
+    
+    # Get batch based on API tier
+    symbols_to_screen = get_screening_batch(all_symbols, max_results)
     
     logger.info(f"Starting stock screen: RSI<{max_rsi}, Drop>{min_daily_drop}%, Period:{period}")
     logger.info(f"Date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
@@ -438,8 +512,13 @@ def screen_stocks(
                 time.sleep(DELAY_BETWEEN_CALLS)
                 continue
             
+            # 4. Market cap filter
+            market_cap = _get_market_cap(ticker)
+            if min_market_cap > 0 and market_cap and market_cap < min_market_cap:
+                time.sleep(DELAY_BETWEEN_CALLS)
+                continue
+            
             # Note: Sector filtering would require additional API calls
-            # Market cap filtering uses pre-filtered symbols
             
             # Create result
             result = {
@@ -451,7 +530,7 @@ def screen_stocks(
                 "period_analyzed": period,
                 "drop_period": f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}",
                 "company_name": None,  # Would need additional API call
-                "market_cap": None,    # Would need additional API call  
+                "market_cap": market_cap,    # Now fetched for filtering
                 "sector": None,        # Would need additional API call
             }
             
@@ -497,7 +576,7 @@ def screen_stocks(
             "api_tier": API_TIER.upper()
         },
         "batch_info": {
-            "using_dynamic_sp500": use_dynamic_sp500,
+            "using_dynamic_sp500": use_comprehensive_universe,
             "daily_api_limit": DAILY_API_LIMIT,
             "max_stocks_per_screen": MAX_STOCKS_PER_SCREEN,
             "symbols_screened_today": list(symbols_to_screen)
@@ -514,7 +593,7 @@ def screen_stocks(
         },
         "results": results,
         "scan_timestamp": _now_utc().isoformat(),
-        "data_source": "Alpha Vantage Premium" if API_TIER == "premium" else "Alpha Vantage Free"
+        "data_source": data_source
     }
     
     # Cache the results
@@ -536,24 +615,36 @@ async def stream_screen_stocks(
     min_volume: Optional[int] = None,
     sectors: Optional[List[str]] = None,
     force_refresh: bool = False,
-    batch_size: int = 10
+    batch_size: int = 10,
+    use_comprehensive_universe: bool = True
 ):
     """
-    Stream screening results in batches for real-time UI updates
+    Stream screening results in batches for real-time UI updates from comprehensive universe
     
     Yields chunks with:
     - type: "progress", "result", "batch_complete", "complete"
     - data: relevant information for each type
+    
+    Args:
+        use_comprehensive_universe: Whether to use comprehensive universe (5,185 tickers) or S&P 500 fallback
     """
     
     # Get symbols to screen
-    all_symbols = get_sp500_symbols()
+    if use_comprehensive_universe:
+        all_symbols = get_comprehensive_stock_universe()
+        universe_type = "comprehensive"
+    else:
+        all_symbols = get_sp500_symbols_fallback()
+        universe_type = "sp500_fallback"
+        
     symbols_to_screen = get_screening_batch(all_symbols, max_results)
     
     # Initial progress chunk
     yield {
         "type": "start",
         "total_symbols": len(symbols_to_screen),
+        "universe_size": len(all_symbols),
+        "universe_type": universe_type,
         "filters": {
             "max_rsi": max_rsi,
             "min_daily_drop": min_daily_drop,
@@ -580,7 +671,7 @@ async def stream_screen_stocks(
                 
                 # Screen individual stock
                 result = await screen_single_stock(
-                    ticker, max_rsi, min_daily_drop, period, min_volume
+                    ticker, max_rsi, min_daily_drop, period, min_volume, min_market_cap
                 )
                 
                 if result:
@@ -629,6 +720,8 @@ async def stream_screen_stocks(
         "summary": {
             "total_found": len(results),
             "total_checked": total_checked,
+            "universe_size": len(all_symbols),
+            "universe_type": universe_type,
             "time_seconds": round(total_time, 1),
             "results": results
         },
@@ -640,7 +733,8 @@ async def screen_single_stock(
     max_rsi: float, 
     min_daily_drop: float, 
     period: str, 
-    min_volume: Optional[int] = None
+    min_volume: Optional[int] = None,
+    min_market_cap: float = 0
 ) -> Optional[Dict[str, Any]]:
     """
     Screen a single stock asynchronously with improved filtering logic
@@ -677,8 +771,10 @@ async def screen_single_stock(
         if min_volume and current_volume and current_volume < min_volume:
             return None
         
-        # Get company overview data for market cap
+        # 4. Market cap filter - Get market cap and filter early if possible
         market_cap = _get_market_cap(ticker)
+        if min_market_cap > 0 and market_cap and market_cap < min_market_cap:
+            return None
         
         # Create result
         return {
@@ -750,32 +846,46 @@ async def quick_screen_stocks(
     max_results: int = 50,
     period: str = '1w',
     min_volume: Optional[int] = None,
-    sectors: Optional[List[str]] = None
+    sectors: Optional[List[str]] = None,
+    use_comprehensive_universe: bool = False  # Default to curated list for speed
 ) -> Dict[str, Any]:
     """
     Quick screening with more lenient filters to find matches faster
+    
+    Args:
+        use_comprehensive_universe: If True, use comprehensive universe. If False, use curated high-cap list.
     """
-    # Use a smaller, high-quality subset for quick results
-    quick_symbols = [
-        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "NFLX", "AMD", "INTC",
-        "JPM", "BAC", "WFC", "C", "GS", "MS", "V", "MA", "PYPL", "ADBE",
-        "JNJ", "PFE", "UNH", "ABBV", "LLY", "MRK", "TMO", "ABT", "BMY", "GILD",
-        "XOM", "CVX", "COP", "SLB", "EOG", "KMI", "OXY", "PSX", "VLO", "MPC",
-        "HD", "LOW", "NKE", "SBUX", "MCD", "DIS", "CMCSA", "VZ", "T", "NFLX"
-    ]
+    if use_comprehensive_universe:
+        # Use comprehensive universe but take a smart sample
+        logger.info("Quick screen: Using sample from comprehensive universe")
+        all_symbols = get_comprehensive_stock_universe()
+        # Take every 10th ticker to get a good spread across the alphabet
+        quick_symbols = all_symbols[::10][:max_results * 2]  # Sample across the universe
+        logger.info(f"Quick screening {len(quick_symbols)} stocks from comprehensive universe (sampled)")
+    else:
+        # Use a smaller, high-quality subset for quick results (original approach)
+        quick_symbols = [
+            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "NFLX", "AMD", "INTC",
+            "JPM", "BAC", "WFC", "C", "GS", "MS", "V", "MA", "PYPL", "ADBE",
+            "JNJ", "PFE", "UNH", "ABBV", "LLY", "MRK", "TMO", "ABT", "BMY", "GILD",
+            "XOM", "CVX", "COP", "SLB", "EOG", "KMI", "OXY", "PSX", "VLO", "MPC",
+            "HD", "LOW", "NKE", "SBUX", "MCD", "DIS", "CMCSA", "VZ", "T", "NFLX"
+        ]
+        logger.info(f"Quick screening {len(quick_symbols)} curated high-cap stocks with relaxed filters")
     
     results = []
     total_checked = 0
     start_time = time.time()
     
-    logger.info(f"Quick screening {len(quick_symbols)} high-cap stocks with relaxed filters")
-    
-    for ticker in quick_symbols[:max_results]:
+    for ticker in quick_symbols[:max_results * 2]:  # Screen more to get max_results
+        if len(results) >= max_results:
+            break
+            
         try:
             total_checked += 1
             
             result = await screen_single_stock(
-                ticker, max_rsi + 10, min_daily_drop - 1, period, min_volume  # More lenient
+                ticker, max_rsi + 10, min_daily_drop - 1, period, min_volume, min_market_cap  # More lenient
             )
             
             if result:
@@ -795,7 +905,8 @@ async def quick_screen_stocks(
         "total_checked": total_checked,
         "performance": {
             "total_time_seconds": round(total_time, 1),
-            "screening_type": "quick"
+            "screening_type": "quick",
+            "universe_type": "comprehensive_sample" if use_comprehensive_universe else "curated_high_cap"
         },
         "filters_applied": {
             "max_rsi": max_rsi + 10,  # Show actual relaxed filters

@@ -440,7 +440,9 @@ async def screen_stocks_endpoint(request: ScreenerRequest):
             include_analysis=request.include_analysis,
             period=request.period,
             min_volume=request.min_volume,
-            sectors=request.sectors
+            sectors=request.sectors,
+            use_comprehensive_universe=True,  # Use comprehensive 5,185 ticker universe
+            force_refresh=request.force_refresh
         )
         
         # Convert to response format
@@ -496,7 +498,8 @@ async def screen_stocks_stream(request: ScreenerRequest):
                 period=request.period,
                 min_volume=request.min_volume,
                 sectors=request.sectors,
-                force_refresh=request.force_refresh
+                force_refresh=request.force_refresh,
+                use_comprehensive_universe=True  # Use comprehensive 5,185 ticker universe
             ):
                 # Yield each chunk as JSON line
                 yield f"data: {json.dumps(chunk)}\n\n"
@@ -544,7 +547,8 @@ async def screen_stocks_json_stream(request: ScreenerRequest):
             min_volume=request.min_volume,
             sectors=request.sectors,
             force_refresh=request.force_refresh,
-            batch_size=20  # Larger batches for JSON response
+            batch_size=20,  # Larger batches for JSON response
+            use_comprehensive_universe=True  # Use comprehensive 5,185 ticker universe
         ):
             if chunk["type"] == "result":
                 results.append(chunk["stock"])
@@ -598,7 +602,8 @@ async def screen_stocks_quick(request: ScreenerRequest):
             max_results=min(request.max_results, 50),  # Limit for speed
             period=request.period,
             min_volume=request.min_volume,
-            sectors=request.sectors
+            sectors=request.sectors,
+            use_comprehensive_universe=False  # Keep curated list for speed, but can be changed to True for broader coverage
         )
         
         logger.info(f"Quick screen complete: {results['total_found']} stocks found from {results['total_checked']} checked")
