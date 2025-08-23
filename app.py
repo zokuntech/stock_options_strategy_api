@@ -18,6 +18,7 @@ from utils.indicators import (
     get_market_context,
 )
 from utils.screener import screen_stocks
+from utils.company_names import get_company_name_with_fallback
 
 import openai
 import os
@@ -388,8 +389,16 @@ async def check_dip(request: TickerRequest):
         vix_level = metrics.get("VIX", 20)
         estimated_credit = estimate_bull_put_credit(current_price, vix_level)
 
+        # Get company name safely
+        try:
+            company_name = get_company_name_with_fallback(ticker)
+        except Exception as e:
+            logger.warning(f"Failed to get company name for {ticker}: {e}")
+            company_name = ticker
+        
         response_data = {
             "ticker": ticker,
+            "company_name": get_company_name_with_fallback(ticker),
             "play": is_play,
             "tier": "BUY" if is_play else "PASS",
             "metrics": metrics,
