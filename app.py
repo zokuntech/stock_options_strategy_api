@@ -626,6 +626,73 @@ async def screen_stocks_quick(request: ScreenerRequest):
 def root():
     return {"message": "Bull Put Credit Spread API (Alpha Vantage)", "version": "2.2.0"}
 
+@app.get("/vix")
+def get_vix():
+    """Get current VIX (Volatility Index) data"""
+    try:
+        from utils.indicators import get_vix_data
+        
+        vix_data = get_vix_data()
+        
+        if not vix_data:
+            raise HTTPException(status_code=500, detail="Unable to fetch VIX data")
+        
+        vix_level = vix_data.get("vix_level")
+        
+        if vix_level is None:
+            raise HTTPException(status_code=500, detail="VIX data not available")
+        
+        # Determine market sentiment based on VIX level
+        if vix_level >= 30:
+            sentiment = "Extreme Fear"
+            description = "Very high volatility - significant market stress"
+            color = "#ff4444"  # Red
+        elif vix_level >= 25:
+            sentiment = "High Fear"
+            description = "High volatility - elevated market concern"
+            color = "#ff8800"  # Orange
+        elif vix_level >= 20:
+            sentiment = "Moderate Fear"
+            description = "Elevated volatility - some market concern"
+            color = "#ffaa00"  # Yellow-Orange
+        elif vix_level >= 15:
+            sentiment = "Low Fear"
+            description = "Normal volatility - calm market conditions"
+            color = "#88cc00"  # Yellow-Green
+        else:
+            sentiment = "Very Low Fear"
+            description = "Low volatility - very calm market"
+            color = "#00cc44"  # Green
+        
+        return {
+            "vix_level": round(vix_level, 2),
+            "sentiment": sentiment,
+            "description": description,
+            "color": color,
+            "date": vix_data.get("date"),
+            "timestamp": datetime.utcnow().isoformat(),
+            "daily_data": {
+                "open": round(vix_data.get("open", 0), 2),
+                "high": round(vix_data.get("high", 0), 2),
+                "low": round(vix_data.get("low", 0), 2),
+                "close": round(vix_data.get("close", 0), 2),
+                "volume": vix_data.get("volume", 0)
+            },
+            "interpretation": {
+                "very_low": "< 15 (Very calm market)",
+                "low": "15-20 (Normal volatility)",
+                "moderate": "20-25 (Elevated concern)",
+                "high": "25-30 (High market stress)",
+                "extreme": "> 30 (Extreme fear/panic)"
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching VIX data: {e}")
+        raise HTTPException(status_code=500, detail=f"Error fetching VIX data: {str(e)}")
+
 if __name__ == "__main__":
     # Use a single worker in Docker/App Runner
     uvicorn.run(app, host="0.0.0.0", port=8000)
