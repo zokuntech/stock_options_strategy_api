@@ -1,10 +1,10 @@
 # Simple approach: Create a certificate for a custom domain
 # You'll need to own a domain name for this to work
 
-# If you have a domain name, uncomment and update these resources:
-/*
+# Certificate with automatic Route 53 validation
 resource "aws_acm_certificate" "app" {
-  domain_name       = "api.yourdomain.com"  # Replace with your domain
+  domain_name       = "snipethedip.com"
+  subject_alternative_names = ["*.snipethedip.com"]
   validation_method = "DNS"
 
   lifecycle {
@@ -17,6 +17,7 @@ resource "aws_acm_certificate" "app" {
   }
 }
 
+# Automatic validation records
 resource "aws_route53_record" "app_validation" {
   for_each = {
     for dvo in aws_acm_certificate.app.domain_validation_options : dvo.domain_name => {
@@ -31,7 +32,7 @@ resource "aws_route53_record" "app_validation" {
   records         = [each.value.record]
   ttl             = 60
   type            = each.value.type
-  zone_id         = "YOUR_HOSTED_ZONE_ID"  # Replace with your Route53 zone ID
+  zone_id         = aws_route53_zone.main.zone_id
 }
 
 resource "aws_acm_certificate_validation" "app" {
@@ -42,11 +43,8 @@ resource "aws_acm_certificate_validation" "app" {
     create = "10m"
   }
 }
-*/
 
-# For now, we'll use a placeholder certificate ARN
-# You'll need to create a certificate manually in ACM and update this
+# Use the terraform-managed certificate
 locals {
-  # Replace this with your actual certificate ARN from AWS Console
-  certificate_arn = "arn:aws:acm:us-west-2:106383253452:certificate/7bba664f-317e-454e-953a-c90ddfeeb358"
+  certificate_arn = aws_acm_certificate_validation.app.certificate_arn
 }
