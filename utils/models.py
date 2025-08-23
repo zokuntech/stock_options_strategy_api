@@ -7,6 +7,7 @@ class TickerRequest(BaseModel):
 
 class TickerResponse(BaseModel):
     ticker: str
+    company_name: Optional[str] = None
     play: bool
     tier: str  # A, B, C, or PASS
     metrics: Dict[str, Any]

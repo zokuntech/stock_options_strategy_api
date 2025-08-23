@@ -13,6 +13,14 @@ import asyncio
 
 from .indicators import _alpha_vantage_history, calculate_rsi, _now_utc
 
+# Import company names utility
+try:
+    from .company_names import get_company_name_with_fallback
+except ImportError:
+    # Fallback function if import fails
+    def get_company_name_with_fallback(ticker: str) -> str:
+        return ticker
+
 logger = logging.getLogger(__name__)
 
 # ===========================
@@ -529,7 +537,7 @@ def screen_stocks(
                 "volume": int(current_volume) if current_volume else None,
                 "period_analyzed": period,
                 "drop_period": f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}",
-                "company_name": None,  # Would need additional API call
+                "company_name": get_company_name_with_fallback(ticker),
                 "market_cap": market_cap,    # Now fetched for filtering
                 "sector": None,        # Would need additional API call
             }
@@ -779,6 +787,7 @@ async def screen_single_stock(
         # Create result
         return {
             "ticker": ticker,
+            "company_name": get_company_name_with_fallback(ticker),
             "current_price": round(current_price, 2),
             "daily_change_pct": round(daily_change_pct, 2),
             "rsi": round(current_rsi, 1),
