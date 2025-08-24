@@ -79,7 +79,7 @@ resource "aws_ecs_service" "app" {
     container_port   = 8000
   }
 
-  depends_on = [aws_lb_listener.app]
+  depends_on = [aws_lb_listener.app_http, aws_lb_listener.app_https]
 
   tags = {
     Project     = var.project_name
