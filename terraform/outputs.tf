@@ -20,7 +20,17 @@ output "vantage_secret_arn" {
 
 output "app_url" {
   description = "Application URL"
-  value       = "http://${aws_lb.main.dns_name}"
+  value       = "https://${aws_lb.main.dns_name}"
+}
+
+output "custom_domain_url" {
+  description = "Custom domain URL"
+  value       = "https://api.snipethedip.com"
+}
+
+output "frontend_domain_url" {
+  description = "Frontend domain URL"
+  value       = "https://app.snipethedip.com"
 }
 
 output "alb_dns_name" {
