@@ -46,8 +46,4 @@ resource "aws_route53_record" "root_alias" {
   }
 }
 
-# Output the nameservers
-output "nameservers" {
-  description = "Route 53 nameservers - add these to Namecheap"
-  value       = aws_route53_zone.main.name_servers
-}
+# Nameservers output moved to outputs.tf

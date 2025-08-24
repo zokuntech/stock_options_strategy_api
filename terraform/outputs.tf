@@ -36,4 +36,9 @@ output "frontend_domain_url" {
 output "alb_dns_name" {
   description = "ALB DNS name"
   value       = aws_lb.main.dns_name
+}
+
+output "nameservers" {
+  description = "Route 53 nameservers - add these to Namecheap"
+  value       = aws_route53_zone.main.name_servers
 } 
