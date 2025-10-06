@@ -99,6 +99,56 @@ data "aws_iam_policy_document" "gha_ecs_policy" {
   }
 }
 
+# Terraform deployment permissions for GitHub Actions
+data "aws_iam_policy_document" "gha_terraform_policy" {
+  statement {
+    actions = [
+      "ec2:*",
+      "ecs:*",
+      "ecr:*",
+      "elasticloadbalancing:*",
+      "route53:*",
+      "acm:*",
+      "secretsmanager:*",
+      "cloudwatch:*",
+      "logs:*",
+      "iam:*",
+      "budgets:*",
+      "sns:*"
+    ]
+    resources = ["*"]
+  }
+  
+  # S3 permissions for Terraform state
+  statement {
+    actions = [
+      "s3:ListBucket",
+      "s3:GetBucketVersioning",
+      "s3:GetBucketLocation"
+    ]
+    resources = [aws_s3_bucket.terraform_state.arn]
+  }
+  
+  statement {
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject"
+    ]
+    resources = ["${aws_s3_bucket.terraform_state.arn}/*"]
+  }
+  
+  # DynamoDB permissions for state locking
+  statement {
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem"
+    ]
+    resources = [aws_dynamodb_table.terraform_locks.arn]
+  }
+}
+
 resource "aws_iam_policy" "gha_ecs" {
   name   = "${var.project_name}-${var.environment}-gha-ecs"
   policy = data.aws_iam_policy_document.gha_ecs_policy.json
@@ -112,4 +162,19 @@ resource "aws_iam_policy" "gha_ecs" {
 resource "aws_iam_role_policy_attachment" "gha_ecs_attach" {
   role       = aws_iam_role.gha_ecr_push.name
   policy_arn = aws_iam_policy.gha_ecs.arn
+}
+
+resource "aws_iam_policy" "gha_terraform" {
+  name   = "${var.project_name}-${var.environment}-gha-terraform"
+  policy = data.aws_iam_policy_document.gha_terraform_policy.json
+
+  tags = {
+    Project     = var.project_name
+    Environment = var.environment
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "gha_terraform_attach" {
+  role       = aws_iam_role.gha_ecr_push.name
+  policy_arn = aws_iam_policy.gha_terraform.arn
 } 
