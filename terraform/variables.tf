@@ -33,4 +33,9 @@ variable "vantage_api_key" {
   description = "Alpha Vantage API key for stock data"
   type        = string
   sensitive   = true
+}
+
+variable "budget_alert_email" {
+  description = "Email address for budget alerts"
+  type        = string
 } 
